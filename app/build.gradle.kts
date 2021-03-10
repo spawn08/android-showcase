@@ -3,10 +3,11 @@ import com.android.build.gradle.internal.dsl.DefaultConfig
 
 plugins {
     id(GradlePluginId.ANDROID_APPLICATION)
-    id(GradlePluginId.KOTLIN_ANDROID)
-    id(GradlePluginId.KOTLIN_ANDROID_EXTENSIONS)
+    id(GradlePluginId.KOTLIN_ANDROID) // or kotlin("android") or id 'kotlin-android'
+    id(GradlePluginId.KOTLIN_KAPT) // or kotlin("kapt")
     id(GradlePluginId.KTLINT_GRADLE)
     id(GradlePluginId.SAFE_ARGS)
+    id(GradlePluginId.ANDROID_JUNIT_5)
 }
 
 android {
@@ -25,7 +26,7 @@ android {
         buildConfigFieldFromGradleProperty("apiBaseUrl")
         buildConfigFieldFromGradleProperty("apiToken")
 
-        buildConfigField("FEATURE_MODULE_NAMES", getDynamicFeatureModuleNames())
+        buildConfigField("FEATURE_MODULE_NAMES", getFeatureNames())
     }
 
     buildTypes {
@@ -49,12 +50,14 @@ android {
     }
 
     // Each feature module that is included in settings.gradle.kts is added here as dynamic feature
-    dynamicFeatures = ModuleDependency.getDynamicFeatureModules().toMutableSet()
+    dynamicFeatures = ModuleDependency.getFeatureModules().toMutableSet()
 
     lintOptions {
         // By default lint does not check test sources, but setting this option means that lint will not even parse them
         isIgnoreTestSources = true
     }
+
+    buildFeatures.viewBinding = true
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
@@ -67,25 +70,40 @@ android {
 }
 
 dependencies {
-    api(project(ModuleDependency.LIBRARY_BASE))
+    // Gradle 7 introduces version catalogs - a new way for sharing dependency versions across projects.
+    // Dependencies are defined in gradle.settings.kts file.
+    // False positive cannot access class (fixed in InteliJ IDEA 2021.1 EAP 1 afair)
+    api(libs.bundles.kotlin)
+    api(libs.bundles.stetho)
+    api(libs.bundles.retrofit)
+    api(libs.bundles.okhttp)
+    api(libs.bundles.kodein)
+    api(libs.play.core)
+    api(libs.bundles.ktx)
+    api(libs.bundles.navigation)
+    api(libs.bundles.lifecycle)
+    api(libs.bundles.room)
+    api(libs.timber)
+    api(libs.coil)
+    api(libs.constraintlayout)
+    api(libs.coordinatorlayout)
+    api(libs.appcompat)
+    api(libs.recyclerview)
+    api(libs.material)
+    api(libs.coroutines)
+    api(libs.lottie)
 
-    implementation(LibraryDependency.OK_HTTP)
-    implementation(LibraryDependency.LOGGING_INTERCEPTOR)
-    implementation(LibraryDependency.PLAY_CORE)
-    implementation(LibraryDependency.STETHO)
-    implementation(LibraryDependency.STETHO_OK_HTTP)
+    kapt(libs.room.compiler)
 
-    api(LibraryDependency.RETROFIT)
-    api(LibraryDependency.RETROFIT_MOSHI_CONVERTER)
-    api(LibraryDependency.SUPPORT_CONSTRAINT_LAYOUT)
-    api(LibraryDependency.COORDINATOR_LAYOUT)
-    api(LibraryDependency.RECYCLER_VIEW)
-    api(LibraryDependency.MATERIAL)
-    api(LibraryDependency.FRAGMENT_KTX)
-    api(LibraryDependency.K_ANDROID)
-    api(LibraryDependency.LOTTIE)
+    testImplementation(project(ModuleDependency.LIBRARY_TEST_UTILS))
+    testImplementation(libs.bundles.test)
+
+    testRuntimeOnly(libs.junit.jupiter.engine)
 }
 
+/*
+Takes value from Gradle project property and sets it as build config property
+ */
 fun BaseFlavor.buildConfigFieldFromGradleProperty(gradlePropertyName: String) {
     val propertyValue = project.properties[gradlePropertyName] as? String
     checkNotNull(propertyValue) { "Gradle property $gradlePropertyName is null" }
@@ -94,14 +112,20 @@ fun BaseFlavor.buildConfigFieldFromGradleProperty(gradlePropertyName: String) {
     buildConfigField("String", androidResourceName, propertyValue)
 }
 
-fun getDynamicFeatureModuleNames() = ModuleDependency.getDynamicFeatureModules()
+/*
+Return names of the features
+ */
+fun getFeatureNames() = ModuleDependency.getFeatureModules()
     .map { it.replace(":feature_", "") }
     .toSet()
 
 fun String.toSnakeCase() = this.split(Regex("(?=[A-Z])")).joinToString("_") { it.toLowerCase() }
 
+/*
+Adds a new field to the generated BuildConfig class
+ */
 fun DefaultConfig.buildConfigField(name: String, value: Set<String>) {
-    // Generates String that holds Java String Array code
+    // Create String that holds Java String Array code
     val strValue = value.joinToString(prefix = "{", separator = ",", postfix = "}", transform = { "\"$it\"" })
     buildConfigField("String[]", name, strValue)
 }

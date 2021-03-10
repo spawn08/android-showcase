@@ -1,15 +1,12 @@
 import com.android.build.gradle.BaseExtension
-import com.github.benmanes.gradle.versions.updates.DependencyUpdatesTask
+import io.gitlab.arturbosch.detekt.Detekt
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-import org.jlleitschuh.gradle.ktlint.reporter.ReporterType
 
 plugins {
     id(GradlePluginId.DETEKT)
     id(GradlePluginId.KTLINT_GRADLE)
-    id(GradlePluginId.GRADLE_VERSION_PLUGIN)
-    id(GradlePluginId.KOTLIN_JVM) apply false
+    id(GradlePluginId.ANDROID_JUNIT_5) apply false
     id(GradlePluginId.KOTLIN_ANDROID) apply false
-    id(GradlePluginId.KOTLIN_ANDROID_EXTENSIONS) apply false
     id(GradlePluginId.ANDROID_APPLICATION) apply false
     id(GradlePluginId.ANDROID_DYNAMIC_FEATURE) apply false
     id(GradlePluginId.ANDROID_LIBRARY) apply false
@@ -23,12 +20,13 @@ allprojects {
         jcenter()
     }
 
-    // We want to apply ktlint at all project level because it also checks build gradle files
+    // We want to apply ktlint at all project level because it also checks Gradle config files (*.kts)
     apply(plugin = GradlePluginId.KTLINT_GRADLE)
 
     // Ktlint configuration for sub-projects
     ktlint {
-        version.set(CoreVersion.KTLINT)
+        // Version of ktlint cmd tool (Ktlint Gradle plugin is just a wrapper for this tool)
+        version.set("0.40.0")
         verbose.set(true)
         android.set(true)
 
@@ -36,12 +34,18 @@ allprojects {
         // enableExperimentalRules.set(true)
 
         reporters {
-            reporter(ReporterType.CHECKSTYLE)
+            reporter(org.jlleitschuh.gradle.ktlint.reporter.ReporterType.CHECKSTYLE)
         }
 
         filter {
             exclude { element -> element.file.path.contains("generated/") }
         }
+    }
+
+    // Gradle dependency locking - lock all configurations of the app
+    // More: https://docs.gradle.org/current/userguide/dependency_locking.html
+    dependencyLocking {
+        lockAllConfigurations()
     }
 }
 
@@ -53,11 +57,57 @@ subprojects {
     apply(plugin = GradlePluginId.DETEKT)
 
     detekt {
-        config = files("${project.rootDir}/detekt.yml")
+        config = files("$rootDir/detekt.yml")
+
         parallel = true
+
+        // By default detekt does not check test source set and gradle specific files, so hey have to be added manually
+        input = files(
+            "$rootDir/buildSrc",
+            "$rootDir/build.gradle.kts",
+            "$rootDir/settings.gradle.kts",
+            "src/main/kotlin",
+            "src/test/kotlin"
+        )
     }
+
     afterEvaluate {
         configureAndroid()
+    }
+
+    // While writing versions locks pre-release version of dependencies will be ignored
+    configurations.all {
+        resolutionStrategy.componentSelection {
+            // Accept the highest version matching the requested version that isn't...
+            all {
+                // detekt is using pre-release dependencies
+                val detektExceptions = listOf(
+                    "io.gitlab.arturbosch.detekt",
+                    "com.fasterxml.jackson",
+                    "com.fasterxml.jackson.core",
+                    "com.fasterxml.jackson"
+                )
+
+                if (detektExceptions.any { it == candidate.group }) {
+                    return@all
+                }
+
+                // android lint is using pre-release dependencies
+                val androidLintExceptions = listOf("com.android.tools.build")
+
+                if (androidLintExceptions.any { it == candidate.group }) {
+                    return@all
+                }
+
+                // Do reject pre-release version
+                val rejected = listOf("alpha", "beta", "rc", "cr", "m", "preview")
+                    .any { Regex("(?i).*[.-]$it[.\\d-]*").matches(candidate.version) }
+
+                if (rejected) {
+                    reject("Release candidate")
+                }
+            }
+        }
     }
 }
 
@@ -74,39 +124,19 @@ tasks.withType<KotlinCompile> {
     kotlinOptions.jvmTarget = JavaVersion.VERSION_1_8.toString()
 }
 
-tasks {
-    // Gradle versions plugin configuration
-    "dependencyUpdates"(DependencyUpdatesTask::class) {
-        resolutionStrategy {
-            componentSelection {
-                all {
-                    // Do not show pre-release version of library in generated dependency report
-                    val rejected = listOf("alpha", "beta", "rc", "cr", "m", "preview")
-                        .map { qualifier -> Regex("(?i).*[.-]$qualifier[.\\d-]*") }
-                        .any { it.matches(candidate.version) }
-                    if (rejected) {
-                        reject("Release candidate")
-                    }
-
-                    // kAndroid newest version is 0.8.8 (jcenter), however maven repository contains version 0.8.7 and
-                    // plugin fails to recognize it correctly
-                    if (candidate.group == "com.pawegio.kandroid") {
-                        reject("version ${candidate.version} is broken for ${candidate.group}'")
-                    }
-                }
-            }
-        }
-    }
+// Target version of the generated JVM bytecode. It is used for type resolution.
+tasks.withType<Detekt> {
+    this.jvmTarget = "1.8"
 }
 
+/*
+Mimics all static checks that run on CI.
+Note that this task is intended to run locally (not on CI), because on CI we prefer to have parallel execution
+and separate reports for each of the checks (multiple statuses eg. on github PR page).
+ */
 task("staticCheck") {
-    description =
-        """Mimics all static checks that run on CI.
-        Note that this task is intended to run locally (not on CI), because on CI we prefer to have parallel execution
-        and separate reports for each check (multiple statuses eg. on github PR page).
-        """.trimMargin()
-
     group = "verification"
+
     afterEvaluate {
         // Filter modules with "lintDebug" task (non-Android modules do not have lintDebug task)
         val lintTasks = subprojects.mapNotNull { "${it.name}:lintDebug" }
