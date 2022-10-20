@@ -1,158 +1,54 @@
-import com.android.build.gradle.BaseExtension
-import io.gitlab.arturbosch.detekt.Detekt
-import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
 
 plugins {
-    id(GradlePluginId.DETEKT)
-    id(GradlePluginId.KTLINT_GRADLE)
-    id(GradlePluginId.ANDROID_JUNIT_5) apply false
-    id(GradlePluginId.KOTLIN_ANDROID) apply false
-    id(GradlePluginId.ANDROID_APPLICATION) apply false
-    id(GradlePluginId.ANDROID_DYNAMIC_FEATURE) apply false
-    id(GradlePluginId.ANDROID_LIBRARY) apply false
-    id(GradlePluginId.SAFE_ARGS) apply false
-}
-
-// all projects = root project + sub projects
-allprojects {
-    repositories {
-        google()
-        jcenter()
-    }
-
-    // We want to apply ktlint at all project level because it also checks Gradle config files (*.kts)
-    apply(plugin = GradlePluginId.KTLINT_GRADLE)
-
-    // Ktlint configuration for sub-projects
-    ktlint {
-        // Version of ktlint cmd tool (Ktlint Gradle plugin is just a wrapper for this tool)
-        version.set("0.40.0")
-        verbose.set(true)
-        android.set(true)
-
-        // Uncomment below line and run .\gradlew ktlintCheck to see check ktlint experimental rules
-        // enableExperimentalRules.set(true)
-
-        reporters {
-            reporter(org.jlleitschuh.gradle.ktlint.reporter.ReporterType.CHECKSTYLE)
-        }
-
-        filter {
-            exclude { element -> element.file.path.contains("generated/") }
-        }
-    }
-
-    // Gradle dependency locking - lock all configurations of the app
-    // More: https://docs.gradle.org/current/userguide/dependency_locking.html
-    dependencyLocking {
-        lockAllConfigurations()
-    }
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.safeArgs) apply false
+    alias(libs.plugins.junit5Android) apply false
+    alias(libs.plugins.detekt)
 }
 
 subprojects {
     tasks.withType<Test> {
         maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).takeIf { it > 0 } ?: 1
     }
-
-    apply(plugin = GradlePluginId.DETEKT)
-
-    detekt {
-        config = files("$rootDir/detekt.yml")
-
-        parallel = true
-
-        // By default detekt does not check test source set and gradle specific files, so hey have to be added manually
-        input = files(
-            "$rootDir/buildSrc",
-            "$rootDir/build.gradle.kts",
-            "$rootDir/settings.gradle.kts",
-            "src/main/kotlin",
-            "src/test/kotlin"
-        )
-    }
-
-    afterEvaluate {
-        configureAndroid()
-    }
-
-    // While writing versions locks pre-release version of dependencies will be ignored
-    configurations.all {
-        resolutionStrategy.componentSelection {
-            // Accept the highest version matching the requested version that isn't...
-            all {
-                // detekt is using pre-release dependencies
-                val detektExceptions = listOf(
-                    "io.gitlab.arturbosch.detekt",
-                    "com.fasterxml.jackson",
-                    "com.fasterxml.jackson.core",
-                    "com.fasterxml.jackson"
-                )
-
-                if (detektExceptions.any { it == candidate.group }) {
-                    return@all
-                }
-
-                // android lint is using pre-release dependencies
-                val androidLintExceptions = listOf("com.android.tools.build")
-
-                if (androidLintExceptions.any { it == candidate.group }) {
-                    return@all
-                }
-
-                // Do reject pre-release version
-                val rejected = listOf("alpha", "beta", "rc", "cr", "m", "preview")
-                    .any { Regex("(?i).*[.-]$it[.\\d-]*").matches(candidate.version) }
-
-                if (rejected) {
-                    reject("Release candidate")
-                }
-            }
-        }
-    }
-}
-
-fun Project.configureAndroid() {
-    (project.extensions.findByName("android") as? BaseExtension)?.run {
-        sourceSets {
-            map { it.java.srcDir("src/${it.name}/kotlin") }
-        }
-    }
-}
-
-// JVM target applied to all Kotlin tasks across all sub-projects
-tasks.withType<KotlinCompile> {
-    kotlinOptions.jvmTarget = JavaVersion.VERSION_1_8.toString()
-}
-
-// Target version of the generated JVM bytecode. It is used for type resolution.
-tasks.withType<Detekt> {
-    this.jvmTarget = "1.8"
 }
 
 /*
-Mimics all static checks that run on CI.
-Note that this task is intended to run locally (not on CI), because on CI we prefer to have parallel execution
-and separate reports for each of the checks (multiple statuses eg. on github PR page).
+Allows to run detekt for all files in the Gradle project and all subprojects without a need to configure detekt
+plugin in every subproject.
  */
-task("staticCheck") {
-    group = "verification"
+tasks.register("detektCheck", io.gitlab.arturbosch.detekt.Detekt::class) {
+    val autoCorrectParam = project.hasProperty("detektAutoCorrect")
 
-    afterEvaluate {
-        // Filter modules with "lintDebug" task (non-Android modules do not have lintDebug task)
-        val lintTasks = subprojects.mapNotNull { "${it.name}:lintDebug" }
+    description = "Custom detekt for to check all modules"
+    parallel = true
+    ignoreFailures = false
+    autoCorrect = autoCorrectParam
+    setSource(file(projectDir))
+    // Detekt config is composed of two configs:
+    // 1. detekt default config rules
+    // https://github.com/detekt/detekt/blob/main/detekt-core/src/main/resources/default-detekt-config.yml
+    // 2. detekt-formatting rules
+    // https://github.com/detekt/detekt/blob/main/detekt-formatting/src/main/resources/config/config.yml
 
-        // Get modules with "testDebugUnitTest" task (app module does not have it)
-        val testTasks = subprojects.mapNotNull { "${it.name}:testDebugUnitTest" }
-            .filter { it != "app:testDebugUnitTest" }
+    // Custom detekt config
+    config.setFrom("$projectDir/detekt.yml")
 
-        // All task dependencies
-        val taskDependencies =
-            mutableListOf("app:assembleAndroidTest", "ktlintCheck", "detekt").also {
-                it.addAll(lintTasks)
-                it.addAll(testTasks)
-            }
+    // Use default configuration on top of custom config (new detect rules will work out of the box after upgrading detekt version)
+    buildUponDefaultConfig = true
 
-        // By defining Gradle dependency all dependent tasks will run before this "empty" task
-        dependsOn(taskDependencies)
+    include("**/*.kt", "**/*.kts")
+    exclude("**/resources/**", "**/build/**", "**/generated/**")
+
+    reports {
+        html.required.set(true)
+        xml.required.set(true)
+    }
+
+    dependencies {
+        // detekt wrapper for rules implemented by ktlint https://detekt.dev/docs/rules/formatting
+        detektPlugins(libs.detektFormatting)
     }
 }
